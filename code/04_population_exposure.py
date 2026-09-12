@@ -2,25 +2,30 @@
 """
 Population exposure calculation.
 
-Calculates population exposure to SEPH, SHEP, and CHEP as event duration
-multiplied by population, with exposure expressed in person-days.
+Calculates total and age-specific population exposure to SEPH, SHEP, and CHEP
+as event duration multiplied by population, with exposure expressed in
+person-days.
 
 Input:
-    Event duration: GeoTIFF files containing compound-event duration (days).
+    Event duration:
+        GeoTIFF files containing annual or multi-year mean annual compound-event
+        duration (days).
 
-    ERA5 population: annual GeoTIFF files containing population counts for
-    each year from 1981 to 2020.
+    Total population:
+        GeoTIFF files containing population counts.
 
-    CMIP6 population: GeoTIFF files containing population counts for the
-    representative year of each warming period.
+    Age-specific population:
+        GeoTIFF files containing population counts for ages 0–14, 15–64,
+        and >=65 years.
 
-    For ERA5, annual event duration is combined with population in the
-    corresponding year. For CMIP6, mean annual event duration over each
-    30-year warming period is combined with population for the representative
-    year of that period.
+    Historical annual exposure uses annual event duration and population from
+    the corresponding year. Future warming-period exposure uses multi-year mean
+    annual event duration and population from the representative year of the
+    corresponding warming period.
 
 Output:
-    GeoTIFF files of population exposure in person-days.
+    GeoTIFF files containing total or age-specific population exposure
+    in person-days.
 """
 
 import os
@@ -28,65 +33,64 @@ import rasterio
 import numpy as np
 
 
-def calculate_population_exposure(duration_path, population_path, output_path, invalid_below=None, output_nodata=np.nan):
+def calculate_population_exposure(duration_tif, population_tif, output_tif, out_nodata=-9999.0):
     """Calculate population exposure from event duration and population."""
 
-    with rasterio.open(duration_path) as duration_src, rasterio.open(population_path) as pop_src:
-        duration_data = duration_src.read(1).astype(np.float32)
-        population_data = pop_src.read(1).astype(np.float32)
+    with rasterio.open(duration_tif) as src_dur, rasterio.open(population_tif) as src_pop:
+        if src_dur.width != src_pop.width or src_dur.height != src_pop.height or src_dur.transform != src_pop.transform or src_dur.crs != src_pop.crs:
+            raise ValueError(f"Raster spatial information does not match:\nDuration: {duration_tif}\nPopulation: {population_tif}")
 
-        if duration_src.nodata is not None:
-            duration_data = np.where(duration_data == duration_src.nodata, np.nan, duration_data)
+        duration = src_dur.read(1).astype("float32")
+        population = src_pop.read(1).astype("float32")
 
-        if pop_src.nodata is not None:
-            population_data = np.where(population_data == pop_src.nodata, np.nan, population_data)
+        valid = np.ones(duration.shape, dtype=bool)
 
-        if invalid_below is not None:
-            duration_data[duration_data < invalid_below] = np.nan
+        if src_dur.nodata is not None:
+            valid &= duration != src_dur.nodata
+        if src_pop.nodata is not None:
+            valid &= population != src_pop.nodata
 
-        exposure = duration_data * population_data
+        valid &= duration != -9999
+        valid &= population != -9999
+        valid &= np.isfinite(duration)
+        valid &= np.isfinite(population)
 
-        profile = duration_src.profile
-        profile.update(dtype=rasterio.float32, nodata=output_nodata, compress="lzw")
+        exposure = np.full(duration.shape, out_nodata, dtype="float32")
+        exposure[valid] = duration[valid] * population[valid]
 
-        if not np.isnan(output_nodata):
-            exposure[np.isnan(exposure)] = output_nodata
+        profile = src_dur.profile.copy()
+        profile.update(dtype="float32", nodata=out_nodata, compress="lzw", count=1)
 
-        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        os.makedirs(os.path.dirname(output_tif), exist_ok=True)
 
-        with rasterio.open(output_path, "w", **profile) as dst:
-            dst.write(exposure.astype(np.float32), 1)
+        with rasterio.open(output_tif, "w", **profile) as dst:
+            dst.write(exposure, 1)
 
 
-def calculate_era5_exposure(duration_dir, population_dir, output_dir, event_type, years=range(1981, 2021)):
-    """Calculate annual population exposure for ERA5-based compound events."""
+def calculate_historical_exposure(duration_dir, population_dir, output_dir, event_type, years=range(1981, 2021)):
+    """Calculate annual population exposure for the historical period."""
 
     os.makedirs(output_dir, exist_ok=True)
 
     for year in years:
-        duration_path = os.path.join(duration_dir, f"{event_type}_duration_{year}.tif")
-        population_path = os.path.join(population_dir, f"population_{year}.tif")
-        output_path = os.path.join(output_dir, f"exposure_{year}.tif")
+        duration_tif = os.path.join(duration_dir, f"{event_type}_duration_{year}.tif")
+        population_tif = os.path.join(population_dir, f"population_{year}.tif")
+        output_tif = os.path.join(output_dir, f"{event_type}_exposure_{year}.tif")
 
-        calculate_population_exposure(duration_path, population_path, output_path, output_nodata=np.nan)
+        if not os.path.exists(duration_tif) or not os.path.exists(population_tif):
+            print(f"Skip: {year}")
+            continue
+
+        calculate_population_exposure(duration_tif, population_tif, output_tif)
 
 
-def calculate_cmip6_exposure(base_dir, output_dir, default_population_path, population_map, models, scenarios, scenario_periods_dict, event_folders):
-    """Calculate population exposure for CMIP6 warming periods."""
+def calculate_future_exposure(duration_tif, population_tif, output_tif):
+    """Calculate total population exposure for a future warming period."""
 
-    for model in models:
-        for scenario in scenarios:
-            for period_name in scenario_periods_dict[scenario]:
-                population_path = population_map.get((scenario, period_name), default_population_path)
+    calculate_population_exposure(duration_tif, population_tif, output_tif)
 
-                for event_type, folder_name in event_folders.items():
-                    duration_path = os.path.join(base_dir, folder_name, model, scenario, period_name, f"{model}_{scenario}_{period_name}_{event_type}_yearmean.tif")
 
-                    if not os.path.exists(duration_path):
-                        print(f"Skip: {duration_path}")
-                        continue
+def calculate_age_specific_exposure(duration_tif, age_population_tif, output_tif):
+    """Calculate age-specific population exposure."""
 
-                    event_output_dir = os.path.join(output_dir, event_type, model, scenario, period_name)
-                    output_path = os.path.join(event_output_dir, f"{model}_{scenario}_{period_name}_{event_type}_exposure.tif")
-
-                    calculate_population_exposure(duration_path, population_path, output_path, invalid_below=-1, output_nodata=-9999.0)
+    calculate_population_exposure(duration_tif, age_population_tif, output_tif)
