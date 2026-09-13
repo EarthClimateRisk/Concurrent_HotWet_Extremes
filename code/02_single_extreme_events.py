@@ -12,9 +12,7 @@ Input:
     Thresholds: grid-cell-specific thresholds calculated from the historical
     baseline period (1981–2010), including the P90 wet-day precipitation
     threshold and P95 daily maximum wet-bulb temperature threshold.
-    Mask: 1° land mask defining the study area, including global land areas
-    excluding Greenland, Antarctica, and desert regions with annual
-    precipitation below 100 mm.
+    Mask: 1° land mask defining the study area.
 
 Output:
     Event: daily occurrence of extreme precipitation events or heatwaves.
@@ -84,7 +82,7 @@ def process_heatwaves(events_array):
     return events_array_actual, duration_idea
 
 
-def identify_precipitation_events(input_root, threshold_root, output_root_event, output_root_duration, mask_path, models, scenarios):
+def identify_precipitation_events(input_root, threshold_root, output_root_event, output_root_duration, mask_path, scenarios):
     """Identify extreme precipitation events for historical and future periods."""
 
     with rasterio.open(mask_path) as src:
@@ -92,80 +90,75 @@ def identify_precipitation_events(input_root, threshold_root, output_root_event,
 
     valid_mask = land_mask == 1
 
-    for model in models:
-        threshold_path = os.path.join(threshold_root, f"{model}_historical_Precip_q90.nc")
-        ds_thr = xr.open_dataset(threshold_path)
-        threshold = ds_thr["pr"].values
-        lat = ds_thr["lat"].values
-        lon = ds_thr["lon"].values
+    threshold_path = os.path.join(threshold_root, "historical_Precip_q90.nc")
+    ds_thr = xr.open_dataset(threshold_path)
+    threshold = ds_thr["pr"].values
+    lat = ds_thr["lat"].values
+    lon = ds_thr["lon"].values
 
-        for scenario in scenarios:
-            if scenario == "historical":
-                scenario_periods = {"1981-2010": list(range(1981, 2011))}
-            elif scenario == "ssp245":
-                scenario_periods = {"2015-2044": list(range(2015, 2045)), "2036-2065": list(range(2036, 2066))}
-            elif scenario == "ssp585":
-                scenario_periods = {"2014-2043": list(range(2014, 2044)), "2028-2057": list(range(2028, 2058))}
+    for scenario in scenarios:
+        if scenario == "historical":
+            scenario_periods = {"1981-2010": list(range(1981, 2011))}
+        elif scenario == "ssp245":
+            scenario_periods = {"2015-2044": list(range(2015, 2045)), "2036-2065": list(range(2036, 2066))}
+        elif scenario == "ssp585":
+            scenario_periods = {"2014-2043": list(range(2014, 2044)), "2028-2057": list(range(2028, 2058))}
 
-            for period_name, years in scenario_periods.items():
-                input_scenario_path = os.path.join(input_root, scenario)
+        for period_name, years in scenario_periods.items():
+            print(f"Processing precipitation: {scenario} - {period_name}")
 
-                if not os.path.exists(input_scenario_path) or not any(os.scandir(input_scenario_path)):
-                    logging.info(f"Skip {model}-{scenario}: directory does not exist or is empty")
+            pr_list = []
+            time_list = []
+
+            for year in years:
+                for month in range(1, 13):
+                    folder = scenario if year >= 2015 else "historical"
+                    file = os.path.join(input_root, folder, "precipitation", f"{folder}_pr_{year}_{month:02d}.nc")
+
+                    if os.path.exists(file):
+                        ds = xr.open_dataset(file)
+                        pr_list.append(ds["pr"].values)
+                        time_list.append(pd.date_range(f"{year}-{month:02d}-01", periods=ds.sizes["time"], freq="D"))
+                    else:
+                        print(f"File not found: {file}")
+
+            if not pr_list:
+                logging.info(f"Skip {scenario}-{period_name}: no precipitation data")
+                continue
+
+            pr_all = np.concatenate(pr_list, axis=0)
+            valid_mask_3d = np.broadcast_to(valid_mask, pr_all.shape)
+            pr_all[~valid_mask_3d] = np.nan
+            time_all = pd.DatetimeIndex(np.concatenate([t.values for t in time_list]))
+
+            event_actual, duration = process_highPrecip((pr_all > threshold).astype(int))
+
+            event_actual = event_actual.astype(np.float32)
+            duration = duration.astype(np.float32)
+            event_actual[~valid_mask_3d] = np.nan
+            duration[~valid_mask_3d] = np.nan
+
+            for year in years:
+                year_mask = time_all.year == year
+
+                if not np.any(year_mask):
                     continue
 
-                print(f"Processing: {model} - {scenario} - {period_name}")
+                coords = {"time": time_all[year_mask], "latitude": lat, "longitude": lon}
 
-                pr_list = []
-                time_list = []
+                event_path = os.path.join(output_root_event, scenario, period_name)
+                duration_path = os.path.join(output_root_duration, scenario, period_name)
+                os.makedirs(event_path, exist_ok=True)
+                os.makedirs(duration_path, exist_ok=True)
 
-                for year in years:
-                    for month in range(1, 13):
-                        folder = scenario if year >= 2015 else "historical"
-                        file = os.path.join(input_root, folder, f"{model}_{folder}_pr_{year}_{month:02d}.nc")
+                event_da = xr.DataArray(event_actual[year_mask, :, :], coords=coords, dims=["time", "latitude", "longitude"], name="event")
+                duration_da = xr.DataArray(duration[year_mask, :, :], coords=coords, dims=["time", "latitude", "longitude"], name="duration")
 
-                        if os.path.exists(file):
-                            ds = xr.open_dataset(file)
-                            pr_list.append(ds["pr"].values)
-                            time_list.append(pd.date_range(f"{year}-{month:02d}-01", periods=ds.sizes["time"], freq="D"))
-
-                if not pr_list:
-                    logging.info(f"Skip {model}-{scenario}-{period_name}: no data")
-                    continue
-
-                pr_all = np.concatenate(pr_list, axis=0)
-                valid_mask_3d = np.broadcast_to(valid_mask, pr_all.shape)
-                pr_all[~valid_mask_3d] = np.nan
-                time_all = pd.DatetimeIndex(np.concatenate([t.values for t in time_list]))
-
-                event_actual, duration = process_highPrecip((pr_all > threshold).astype(int))
-
-                event_actual = event_actual.astype(np.float32)
-                duration = duration.astype(np.float32)
-                event_actual[~valid_mask_3d] = np.nan
-                duration[~valid_mask_3d] = np.nan
-
-                for year in years:
-                    year_mask = time_all.year == year
-
-                    if not np.any(year_mask):
-                        continue
-
-                    coords = {"time": time_all[year_mask], "latitude": lat, "longitude": lon}
-
-                    event_path = os.path.join(output_root_event, model, scenario, period_name)
-                    duration_path = os.path.join(output_root_duration, model, scenario, period_name)
-                    os.makedirs(event_path, exist_ok=True)
-                    os.makedirs(duration_path, exist_ok=True)
-
-                    event_da = xr.DataArray(event_actual[year_mask, :, :], coords=coords, dims=["time", "latitude", "longitude"], name="event")
-                    duration_da = xr.DataArray(duration[year_mask, :, :], coords=coords, dims=["time", "latitude", "longitude"], name="duration")
-
-                    event_da.to_netcdf(os.path.join(event_path, f"{model}_{scenario}_event_{year}.nc"))
-                    duration_da.to_netcdf(os.path.join(duration_path, f"{model}_{scenario}_duration_{year}.nc"))
+                event_da.to_netcdf(os.path.join(event_path, f"{scenario}_event_{year}.nc"))
+                duration_da.to_netcdf(os.path.join(duration_path, f"{scenario}_duration_{year}.nc"))
 
 
-def identify_heatwave_events(input_root, threshold_root, output_root_event, output_root_duration, mask_path, models, scenarios):
+def identify_heatwave_events(input_root, threshold_root, output_root_event, output_root_duration, mask_path, scenarios):
     """Identify heatwaves for historical and future periods."""
 
     with rasterio.open(mask_path) as src:
@@ -173,74 +166,69 @@ def identify_heatwave_events(input_root, threshold_root, output_root_event, outp
 
     valid_mask = land_mask == 1
 
-    for model in models:
-        threshold_path = os.path.join(threshold_root, f"{model}_historical_MaxWetbulb_q95.nc")
-        ds_thr = xr.open_dataset(threshold_path)
-        threshold = ds_thr["wetbulb"].values
-        lat = ds_thr["latitude"].values
-        lon = ds_thr["longitude"].values
+    threshold_path = os.path.join(threshold_root, "historical_MaxWetbulb_q95.nc")
+    ds_thr = xr.open_dataset(threshold_path)
+    threshold = ds_thr["wetbulb"].values
+    lat = ds_thr["latitude"].values
+    lon = ds_thr["longitude"].values
 
-        for scenario in scenarios:
-            if scenario == "historical":
-                scenario_periods = {"1981-2010": list(range(1981, 2011))}
-            elif scenario == "ssp245":
-                scenario_periods = {"2015-2044": list(range(2015, 2045)), "2036-2065": list(range(2036, 2066))}
-            elif scenario == "ssp585":
-                scenario_periods = {"2014-2043": list(range(2014, 2044)), "2028-2057": list(range(2028, 2058))}
+    for scenario in scenarios:
+        if scenario == "historical":
+            scenario_periods = {"1981-2010": list(range(1981, 2011))}
+        elif scenario == "ssp245":
+            scenario_periods = {"2015-2044": list(range(2015, 2045)), "2036-2065": list(range(2036, 2066))}
+        elif scenario == "ssp585":
+            scenario_periods = {"2014-2043": list(range(2014, 2044)), "2028-2057": list(range(2028, 2058))}
 
-            for period_name, years in scenario_periods.items():
-                input_scenario_path = os.path.join(input_root, scenario)
+        for period_name, years in scenario_periods.items():
+            print(f"Processing heatwave: {scenario} - {period_name}")
 
-                if not os.path.exists(input_scenario_path) or not any(os.scandir(input_scenario_path)):
-                    print(f"Skip {model}-{scenario}: directory does not exist or is empty")
+            wetbulb_list = []
+            time_list = []
+
+            for year in years:
+                for month in range(1, 13):
+                    folder = scenario if year >= 2015 else "historical"
+                    file = os.path.join(input_root, folder, "wetbulb", f"wetbulb_{folder}_{year}_{month:02d}.nc")
+
+                    if os.path.exists(file):
+                        ds = xr.open_dataset(file)
+                        wetbulb_list.append(ds["wetbulb"].values)
+                        time_list.append(pd.date_range(f"{year}-{month:02d}-01", periods=ds.sizes["time"], freq="D"))
+                    else:
+                        print(f"File not found: {file}")
+
+            if not wetbulb_list:
+                print(f"Skip {scenario}-{period_name}: no wet-bulb temperature data")
+                continue
+
+            wetbulb_all = np.concatenate(wetbulb_list, axis=0)
+            valid_mask_3d = np.broadcast_to(valid_mask, wetbulb_all.shape)
+            wetbulb_all[~valid_mask_3d] = np.nan
+            time_all = pd.DatetimeIndex(np.concatenate([t.values for t in time_list]))
+
+            event_actual, duration = process_heatwaves((wetbulb_all > threshold).astype(int))
+
+            event_actual = event_actual.astype(np.float32)
+            duration = duration.astype(np.float32)
+            event_actual[~valid_mask_3d] = np.nan
+            duration[~valid_mask_3d] = np.nan
+
+            for year in years:
+                year_mask = time_all.year == year
+
+                if not np.any(year_mask):
                     continue
 
-                print(f"Processing: {model} - {scenario} - {period_name}")
+                coords = {"time": time_all[year_mask], "latitude": lat, "longitude": lon}
 
-                wetbulb_list = []
-                time_list = []
+                event_path = os.path.join(output_root_event, scenario, period_name)
+                duration_path = os.path.join(output_root_duration, scenario, period_name)
+                os.makedirs(event_path, exist_ok=True)
+                os.makedirs(duration_path, exist_ok=True)
 
-                for year in years:
-                    for month in range(1, 13):
-                        folder = scenario if year >= 2015 else "historical"
-                        file = os.path.join(input_root, folder, f"wetbulb_{model}_{folder}_{year}_{month:02d}.nc")
+                event_da = xr.DataArray(event_actual[year_mask, :, :], coords=coords, dims=["time", "latitude", "longitude"], name="event")
+                duration_da = xr.DataArray(duration[year_mask, :, :], coords=coords, dims=["time", "latitude", "longitude"], name="duration")
 
-                        if os.path.exists(file):
-                            ds = xr.open_dataset(file)
-                            wetbulb_list.append(ds["wetbulb"].values)
-                            time_list.append(pd.date_range(f"{year}-{month:02d}-01", periods=ds.dims["time"], freq="D"))
-
-                if not wetbulb_list:
-                    print(f"Skip {model}-{scenario}-{period_name}: no data")
-                    continue
-
-                wetbulb_all = np.concatenate(wetbulb_list, axis=0)
-                valid_mask_3d = np.broadcast_to(valid_mask, wetbulb_all.shape)
-                wetbulb_all[~valid_mask_3d] = np.nan
-                time_all = pd.DatetimeIndex(np.concatenate([t.values for t in time_list]))
-
-                event_actual, duration = process_heatwaves((wetbulb_all > threshold).astype(int))
-
-                event_actual = event_actual.astype(np.float32)
-                duration = duration.astype(np.float32)
-                event_actual[~valid_mask_3d] = np.nan
-                duration[~valid_mask_3d] = np.nan
-
-                for year in years:
-                    year_mask = time_all.year == year
-
-                    if not np.any(year_mask):
-                        continue
-
-                    coords = {"time": time_all[year_mask], "latitude": lat, "longitude": lon}
-
-                    event_path = os.path.join(output_root_event, model, scenario, period_name)
-                    duration_path = os.path.join(output_root_duration, model, scenario, period_name)
-                    os.makedirs(event_path, exist_ok=True)
-                    os.makedirs(duration_path, exist_ok=True)
-
-                    event_da = xr.DataArray(event_actual[year_mask, :, :], coords=coords, dims=["time", "latitude", "longitude"], name="event")
-                    duration_da = xr.DataArray(duration[year_mask, :, :], coords=coords, dims=["time", "latitude", "longitude"], name="duration")
-
-                    event_da.to_netcdf(os.path.join(event_path, f"{model}_{scenario}_event_{year}.nc"))
-                    duration_da.to_netcdf(os.path.join(duration_path, f"{model}_{scenario}_duration_{year}.nc"))
+                event_da.to_netcdf(os.path.join(event_path, f"{scenario}_event_{year}.nc"))
+                duration_da.to_netcdf(os.path.join(duration_path, f"{scenario}_duration_{year}.nc"))
