@@ -46,12 +46,23 @@ def calculate_integrated_risk(duration_excel, population_excel, hdi_excel):
         duration_data.columns[10:15]
     ]
 
+    event_names = ["SHEP", "SEPH", "CHEP"]
+
     pop_cols = ["pop2000", "pop2_2030", "pop2_2050", "pop5_2030", "pop5_2040"]
-    hdi_cols = ["ssp245_hdi1", "ssp245_hdi2", "ssp245_hdi3", "ssp5_hdi2", "ssp5_hdi3"]
+
+    hdi_cols = [
+        "historical",
+        "ssp245_warming1.5℃",
+        "ssp245_warming2.0℃",
+        "ssp585_warming1.5℃",
+        "ssp585_warming2.0℃"
+    ]
 
     results = {}
 
     for i, group in enumerate(duration_groups):
+        event_name = event_names[i]
+
         risk_df = pd.DataFrame()
         risk_df["country"] = country
 
@@ -63,6 +74,6 @@ def calculate_integrated_risk(duration_excel, population_excel, hdi_excel):
 
             risk_df[risk_col] = duration_df[dur_col] * pop_df[pop_col] * (1 - hdi_df[hdi_col])
 
-        results[f"group{i + 1}"] = risk_df
+        results[f"risk_{event_name}"] = risk_df
 
     return results
