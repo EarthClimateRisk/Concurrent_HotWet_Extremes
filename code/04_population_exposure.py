@@ -19,7 +19,7 @@ Input:
         and >=65 years.
 
     Historical annual exposure uses annual event duration and population from
-    the corresponding year. Future warming-period exposure uses multi-year mean
+    the corresponding year. Future warming period exposure uses multi-year mean
     annual event duration and population from the representative year of the
     corresponding warming period.
 
