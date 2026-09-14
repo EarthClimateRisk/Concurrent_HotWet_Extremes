@@ -14,7 +14,7 @@ Input:
 
     Older-adult exposure attribution:
         Shapefile containing grid-level compound-event duration, total
-        population, and >=65-year population proportion for the historical
+        population, and >=65 year population proportion for the historical
         and future periods.
 
 Output:
