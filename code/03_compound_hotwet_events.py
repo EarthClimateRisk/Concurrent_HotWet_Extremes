@@ -22,10 +22,10 @@ Input:
 
 Compound-event definitions:
     SEPH: extreme precipitation followed by a heatwave within 7 days after
-    the precipitation event ends.
+    a precipitation event end.
 
     SHEP: heatwave followed by extreme precipitation within 7 days after
-    the heatwave ends.
+    a heatwave event end.
 
     CHEP: heatwave and extreme precipitation overlap for at least 1 day.
 """
