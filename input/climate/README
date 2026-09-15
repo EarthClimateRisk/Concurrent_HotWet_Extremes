@@ -1,5 +1,13 @@
 ## Data availability
 
+### ERA5-Land
+
 The ERA5-Land data used in this study are available on Figshare:
 
 [ERA5-Land data used for compound hot–wet extreme analysis](https://doi.org/10.6084/m9.figshare.33734311)
+
+### CMIP6/ISIMIP3b
+
+The original bias-adjusted CMIP6 data are publicly available from the ISIMIP data repository:
+
+[ISIMIP data repository](https://data.isimip.org/)
